@@ -63,7 +63,7 @@ enum salloc_error {
 	ESALLOC_NOMEM
 };
 
-extern int salloc_error;
+extern __thread int salloc_error;
 
 void salloc_init(size_t size, size_t minimal, double factor);
 void salloc_destroy(void);

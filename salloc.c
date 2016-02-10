@@ -109,16 +109,16 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 
 #ifdef SLAB_DEBUG
 #undef NDEBUG
-uint8_t red_zone[8] = { 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa };
+const uint8_t red_zone[8] = { 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa, 0xfa };
 #else
-uint8_t red_zone[0] = { };
+const uint8_t red_zone[0] = { };
 #endif
 
-int salloc_error;
+__thread int salloc_error;
 
 static const uint32_t SLAB_MAGIC = 0x51abface;
 #define MAX_SLAB_ITEM (SLAB_SIZE / 4)
-static size_t page_size;
+static __thread size_t page_size;
 
 struct slab_item {
 	struct slab_item *next;
@@ -141,7 +141,7 @@ struct slab {
 };
 
 SLIST_HEAD(slab_slist_head, slab);
-static SLIST_HEAD(slab_cache_head, slab_cache) slab_cache = SLIST_HEAD_INITIALIZER(&slab_cache);
+static __thread SLIST_HEAD(slab_cache_head, slab_cache) slab_cache = SLIST_HEAD_INITIALIZER(&slab_cache);
 
 struct arena {
 	char *brk;
@@ -151,9 +151,9 @@ struct arena {
 	struct slab_slist_head slabs, free_slabs;
 };
 
-static uint32_t slab_active_caches;
-static struct slab_cache slab_caches[256];
-static struct arena arena[2], *fixed_arena = &arena[0], *grow_arena = &arena[1];
+static __thread uint32_t slab_active_caches;
+static __thread struct slab_cache slab_caches[256];
+static __thread struct arena arena[2], *fixed_arena, *grow_arena;
 
 static struct slab *
 slab_of_ptr(const void *ptr)
@@ -185,9 +185,11 @@ slab_cache_init(struct slab_cache *cache, size_t item_size, enum arena_type type
 
 	switch (type) {
 	case SLAB_FIXED:
+		assert(fixed_arena != NULL);
 		assert(fixed_arena->brk != NULL);
 		cache->arena = fixed_arena; break;
 	case SLAB_GROW:
+		assert(grow_arena != NULL);
 		cache->arena = grow_arena; break;
 	default:
 		abort();
@@ -296,6 +298,14 @@ arena_alloc(struct arena *arena)
 void
 salloc_init(size_t size, size_t minimal, double factor)
 {
+	static __thread bool inited = false;
+
+	if (inited)
+		return;
+
+	fixed_arena = &arena[0];
+	grow_arena = &arena[1];
+
 #if HAVE_PAGE_SIZE
 	page_size = PAGE_SIZE;
 #elif HAVE_SYSCONF
@@ -322,6 +332,8 @@ salloc_init(size_t size, size_t minimal, double factor)
 	if (size > 0)
 		say_info("slab allocator configured, fixed_arena:%.1fGB",
 			 size / (1024. * 1024 * 1024));
+
+	inited = true;
 }
 
 void
@@ -330,15 +342,19 @@ salloc_destroy(void)
 	struct slab *slab, *next_slab;
 	struct slab_cache *cache, *tmp;
 
-	if (fixed_arena->base != NULL)
-		munmap(fixed_arena->base, fixed_arena->size);
-	memset(fixed_arena, 0, sizeof(*fixed_arena));
+	if (fixed_arena != NULL) {
+		if (fixed_arena->base != NULL)
+			munmap(fixed_arena->base, fixed_arena->size);
+		memset(fixed_arena, 0, sizeof(*fixed_arena));
+	}
 
-	/* grow arena is increased in SLAB_SIZE chunks,
-	   so there is one-to-one relation between slabs and mmaps */
-	SLIST_FOREACH_SAFE(slab, &grow_arena->slabs, link, next_slab)
-		munmap(slab, SLAB_SIZE);
-	memset(grow_arena, 0, sizeof(*grow_arena));
+	if (grow_arena != NULL) {
+		/* grow arena is increased in SLAB_SIZE chunks,
+		   so there is one-to-one relation between slabs and mmaps */
+		SLIST_FOREACH_SAFE(slab, &grow_arena->slabs, link, next_slab)
+			munmap(slab, SLAB_SIZE);
+		memset(grow_arena, 0, sizeof(*grow_arena));
+	}
 
 	/* all slab caches are no longer valid. taint them. */
 	SLIST_FOREACH_SAFE(cache, &slab_cache, link, tmp)
