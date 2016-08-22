@@ -65,10 +65,25 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void)(addr), (void)(size))
 #endif
 
-#if defined(SALLOC_NEED_RED_ZONE_CHECK)
-# ifndef SLAB_DEBUG
-#  define SLAB_DEBUG
-# endif
+// Accessible and defined
+#define SLAB_MARK_MEMORY_ACCESSIBLE(addr, size)				\
+	ASAN_UNPOISON_MEMORY_REGION(addr, size);			\
+	VALGRIND_MAKE_MEM_DEFINED(addr, size);
+
+#define SLAB_MARK_MEMORY_INACCESSIBLE(addr, size, magic)		\
+	ASAN_POISON_MEMORY_REGION(addr, size, magic);			\
+	VALGRIND_MAKE_MEM_NOACCESS(addr, size);
+
+// Accessible and undefined
+#define SLAB_MARK_MEMORY_ALLOCATED(addr, size)				\
+	ASAN_UNPOISON_MEMORY_REGION(addr, size);			\
+	VALGRIND_MALLOCLIKE_BLOCK(addr, size, sizeof(red_zone), 0);
+
+#define SLAB_MARK_MEMORY_FREED(addr, size, magic)			\
+	ASAN_POISON_MEMORY_REGION(addr, size, magic);			\
+	VALGRIND_FREELIKE_BLOCK(addr, sizeof(red_zone));
+
+#ifdef SLAB_DEBUG
 # define SALLOC_CHECK_RED_ZONE(addr) (assert(memcmp(addr, red_zone, sizeof(red_zone)) == 0))
 # define SALLOC_INIT_RED_ZONE(addr) (void)memcpy(addr, red_zone, sizeof(red_zone))
 #else
@@ -387,21 +402,10 @@ format_slab(struct slab_cache *cache, struct slab *slab)
 
 	// Red zone before first element
 	slab->brk = SALLOC_ALIGN(initial_brk + sizeof(red_zone));
-	VALGRIND_MAKE_MEM_DEFINED(slab->brk - sizeof(red_zone), sizeof(red_zone));
+	SLAB_MARK_MEMORY_ACCESSIBLE(slab->brk - sizeof(red_zone), sizeof(red_zone));
 	SALLOC_INIT_RED_ZONE(slab->brk - sizeof(red_zone));
-	VALGRIND_MAKE_MEM_NOACCESS(slab->brk - sizeof(red_zone), sizeof(red_zone));
 
-	ASAN_POISON_MEMORY_REGION(initial_brk, SLAB_SIZE - (initial_brk - (void *)slab), 0xfa);
-
-#ifdef SALLOC_NEED_RED_ZONE_CHECK
-	for (void *item = slab->brk;
-	     item + slab->cache->item_size + sizeof(red_zone) < (void *)slab + SLAB_SIZE;
-	     item = SALLOC_ALIGN(item + slab->cache->item_size + sizeof(red_zone))) {
-		VALGRIND_MAKE_MEM_DEFINED(item + slab->cache->item_size, sizeof(red_zone));
-		SALLOC_INIT_RED_ZONE(item + slab->cache->item_size);
-		VALGRIND_MAKE_MEM_NOACCESS(item + slab->cache->item_size, sizeof(red_zone));
-	}
-#endif
+	SLAB_MARK_MEMORY_INACCESSIBLE(initial_brk, SLAB_SIZE - (initial_brk - (void *)slab), 0xfa);
 
 	TAILQ_INSERT_HEAD(&cache->slabs, slab, cache_link);
 	TAILQ_INSERT_HEAD(&cache->partial_populated_slabs, slab, cache_partial_link);
@@ -417,7 +421,7 @@ fully_populated(const struct slab *slab)
 void
 slab_validate(void)
 {
-#ifdef SALLOC_NEED_RED_ZONE_CHECK
+#ifdef SLAB_DEBUG
 	struct slab *slab;
 
 	for (uint32_t i = 0; i < nelem(arena); i++) {
@@ -427,21 +431,17 @@ slab_validate(void)
 			void *slab_red_zone = item - sizeof(red_zone);
 
 			// Check red zone before the first item
-			ASAN_UNPOISON_MEMORY_REGION(slab_red_zone, sizeof(red_zone));
-			VALGRIND_MAKE_MEM_DEFINED(slab_red_zone, sizeof(red_zone));
+			SLAB_MARK_MEMORY_ACCESSIBLE(slab_red_zone, sizeof(red_zone));
 			SALLOC_CHECK_RED_ZONE(slab_red_zone);
-			VALGRIND_MAKE_MEM_NOACCESS(slab_red_zone, sizeof(red_zone));
-			ASAN_POISON_MEMORY_REGION(slab_red_zone, sizeof(red_zone), 0xfa);
+			SLAB_MARK_MEMORY_INACCESSIBLE(slab_red_zone, sizeof(red_zone), 0xfa);
 
 			// Check red zones after items
-			while (item + slab->cache->item_size + sizeof(red_zone) < (void *)slab + SLAB_SIZE) {
+			while (item < slab->brk) {
 				slab_red_zone = item + slab->cache->item_size;
 
-				ASAN_UNPOISON_MEMORY_REGION(slab_red_zone, sizeof(red_zone));
-				VALGRIND_MAKE_MEM_DEFINED(slab_red_zone, sizeof(red_zone));
+				SLAB_MARK_MEMORY_ACCESSIBLE(slab_red_zone, sizeof(red_zone));
 				SALLOC_CHECK_RED_ZONE(slab_red_zone);
-				VALGRIND_MAKE_MEM_NOACCESS(slab_red_zone, sizeof(red_zone));
-				ASAN_POISON_MEMORY_REGION(slab_red_zone, sizeof(red_zone), 0xfa);
+				SLAB_MARK_MEMORY_INACCESSIBLE(slab_red_zone, sizeof(red_zone), 0xfa);
 
 				item = SALLOC_ALIGN(item + slab->cache->item_size + sizeof(red_zone));
 			}
@@ -511,29 +511,28 @@ slab_cache_alloc(struct slab_cache *cache)
 	if (slab->free == NULL) {
 		assert(valid_item(slab, slab->brk));
 		item = slab->brk;
-		ASAN_UNPOISON_MEMORY_REGION(item, cache->item_size + sizeof(red_zone));
-		VALGRIND_MAKE_MEM_DEFINED((void *)item + cache->item_size, sizeof(red_zone));
+
+		SLAB_MARK_MEMORY_ACCESSIBLE((void *)item, cache->item_size + sizeof(red_zone));
 		SALLOC_INIT_RED_ZONE((void *)item + cache->item_size);
-		VALGRIND_MAKE_MEM_NOACCESS((void *)item + cache->item_size, sizeof(red_zone));
-		ASAN_POISON_MEMORY_REGION((void *)item + cache->item_size, sizeof(red_zone), 0xfa);
+		SLAB_MARK_MEMORY_INACCESSIBLE((void *)item + cache->item_size, sizeof(red_zone), 0xfa);
+
+		SLAB_MARK_MEMORY_ALLOCATED(item, cache->item_size);
+
 		/* we can leave slab here in case of last item has been allocated
 		    and align has been occured */
 		slab->brk = SALLOC_ALIGN(slab->brk + cache->item_size + sizeof(red_zone));
-		ASAN_UNPOISON_MEMORY_REGION(item, cache->item_size);
-		VALGRIND_MALLOCLIKE_BLOCK(item, cache->item_size, sizeof(red_zone), 0);
-		/* call ctor _after_ VALGRIND_MALLOCLIKE_BLOCK */
+
+		/* call ctor _after_ SLAB_MARK_MEMORY_ALLOCATED */
 		if (cache->ctor)
 			cache->ctor(item);
 	} else {
 		assert(valid_item(slab, slab->free));
 		item = slab->free;
 
-		(void)VALGRIND_MAKE_MEM_DEFINED(item, sizeof(void *));
-		ASAN_UNPOISON_MEMORY_REGION(item, sizeof(void *));
+		SLAB_MARK_MEMORY_ACCESSIBLE(item, sizeof(void *));
 		slab->free = item->next;
-		(void)VALGRIND_MAKE_MEM_NOACCESS(item, sizeof(void *));
-		ASAN_UNPOISON_MEMORY_REGION(item, cache->item_size);
-		VALGRIND_MALLOCLIKE_BLOCK(item, cache->item_size, sizeof(red_zone), 0);
+
+		SLAB_MARK_MEMORY_ALLOCATED(item, cache->item_size);
 	}
 
 	if (fully_populated(slab)) {
@@ -595,8 +594,7 @@ sfree(void *ptr)
 #endif
 	}
 
-	ASAN_POISON_MEMORY_REGION(item, cache->item_size, 0xfd);
-	VALGRIND_FREELIKE_BLOCK(item, sizeof(red_zone));
+	SLAB_MARK_MEMORY_FREED(item, cache->item_size, 0xfd);
 }
 
 void
