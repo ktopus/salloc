@@ -30,6 +30,14 @@
 #ifdef OCTOPUS
 # import <util.h>
 # import <tbuf.h>
+#else
+# ifdef SLAB_NEED_STAT
+#  if HAVE_UTIL
+#   include "../tbuf/tbuf.h"
+#  else
+#   include "tbuf.h"
+#  endif
+# endif
 #endif
 
 #include <stddef.h>
@@ -39,6 +47,10 @@
 # include <third_party/queue.h>
 #else
 # include "queue.h"
+#endif
+
+#ifdef OCTOPUS
+# define SLAB_NEED_STAT
 #endif
 
 TAILQ_HEAD(slab_tailq_head, slab);
@@ -73,7 +85,7 @@ void slab_cache_free(struct slab_cache *cache, void *ptr);
 void *salloc(size_t size);
 void sfree(void *ptr);
 void slab_validate();
-#ifdef OCTOPUS
+#ifdef SLAB_NEED_STAT
 void slab_stat(struct tbuf *buf);
 #endif
 void slab_total_stat(uint64_t *bytes_used, uint64_t *items);

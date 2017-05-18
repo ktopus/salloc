@@ -31,6 +31,9 @@
 # import <salloc.h>
 #else
 # include "salloc.h"
+# ifdef SLAB_NEED_STAT
+#  define CRLF "\r\n"
+# endif
 #endif
 
 #include <assert.h>
@@ -127,6 +130,14 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 # define say_info(...) (void)0;
 #endif
 
+#if HAVE_MADVISE
+# undef SLAB_RELEASE_EMPTY
+# define SLAB_RELEASE_EMPTY 1
+#endif
+#ifndef SLAB_RELEASE_EMPTY
+# define SLAB_RELEASE_EMPTY 0
+#endif
+
 #ifndef SLAB_SIZE
 # define SLAB_SIZE (1 << 22)
 #endif
@@ -157,8 +168,8 @@ struct slab {
 	struct slab_item *free;
 	struct slab_cache *cache;
 	void *brk;
-#if HAVE_MADVISE
-	bool need_madvise;
+#if SLAB_RELEASE_EMPTY
+	bool need_release;
 #endif
 	SLIST_ENTRY(slab) link;
 	SLIST_ENTRY(slab) free_link;
@@ -537,8 +548,8 @@ slab_cache_alloc(struct slab_cache *cache)
 
 	if (fully_populated(slab)) {
 		TAILQ_REMOVE(&cache->partial_populated_slabs, slab, cache_partial_link);
-#if HAVE_MADVISE
-		slab->need_madvise = true;
+#if SLAB_RELEASE_EMPTY
+		slab->need_release = true;
 #endif
 	}
 
@@ -579,19 +590,31 @@ sfree(void *ptr)
 	slab->items -= 1;
 
 	if (slab->items == 0) {
+		bool slab_still_alive = true;
+
 		TAILQ_REMOVE(&cache->partial_populated_slabs, slab, cache_partial_link);
 		TAILQ_REMOVE(&cache->slabs, slab, cache_link);
-		SLIST_INSERT_HEAD(&cache->arena->free_slabs, slab, free_link);
 
-#if HAVE_MADVISE
-		if (slab->need_madvise) {
-			slab->need_madvise = false;
-			int r;
+#if SLAB_RELEASE_EMPTY
+		if (slab->need_release) {
+			slab->need_release = false;
+			int r = 0;
+# if HAVE_MADVISE
 			r = madvise((void *)slab + page_size, SLAB_SIZE - page_size, MADV_DONTNEED);
+# else
+			if (cache->arena == grow_arena) {
+				SLIST_REMOVE(&cache->arena->slabs, slab, slab, link);
+				r = munmap(slab, SLAB_SIZE);
+				slab_still_alive = false;
+			}
+# endif // ! HAVE_MADVISE
 			(void)r;
 			assert(r == 0);
 		}
-#endif
+#endif // SLAB_RELEASE_EMPTY
+
+		if (slab_still_alive)
+			SLIST_INSERT_HEAD(&cache->arena->free_slabs, slab, free_link);
 	}
 
 	SLAB_MARK_MEMORY_FREED(item, cache->item_size, 0xfd);
@@ -605,7 +628,7 @@ slab_cache_free(struct slab_cache *cache, void *ptr)
 	sfree(ptr);
 }
 
-#ifdef OCTOPUS
+#ifdef SLAB_NEED_STAT
 static int64_t
 cache_stat(struct slab_cache *cache, struct tbuf *out)
 {
@@ -678,7 +701,9 @@ slab_stat(struct tbuf *t)
 		tbuf_printf(t, "  arena_used: 0" CRLF);
 	}
 }
+#endif
 
+#ifdef OCTOPUS
 register_source();
 #endif
 
