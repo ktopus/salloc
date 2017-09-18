@@ -606,6 +606,8 @@ sfree(void *ptr)
 				SLIST_REMOVE(&cache->arena->slabs, slab, slab, link);
 				assert(cache->arena->size >= SLAB_SIZE);
 				cache->arena->size -= SLAB_SIZE;
+				assert(cache->arena->used >= SLAB_SIZE);
+				cache->arena->used -= SLAB_SIZE;
 				r = munmap(slab, SLAB_SIZE);
 				slab_still_alive = false;
 			}
