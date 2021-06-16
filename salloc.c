@@ -633,6 +633,11 @@ slab_cache_free(struct slab_cache *cache, void *ptr)
 }
 
 #ifdef SLAB_NEED_STAT
+
+#define print_stat(t_, format_, args_...)		\
+	if (tbuf_printf(t_, format_, ##args_) != 0)	\
+		return -1;
+
 static int64_t
 cache_stat(struct slab_cache *cache, struct tbuf *out)
 {
@@ -650,24 +655,24 @@ cache_stat(struct slab_cache *cache, struct tbuf *out)
 	if (slabs == 0 && cache->name == NULL)
 		return 0;
 
-	tbuf_printf(out,
-		    "     - { name: %-16s, item_size: %- 5i, slabs: %- 3i, items: %-11zu"
-		    ", bytes_used: %-12zu, bytes_free: %-12zu }" CRLF,
-		    cache->name, (int)cache->item_size, slabs, items, used, free);
+	print_stat(out,
+		   "     - { name: %-16s, item_size: %- 5i, slabs: %- 3i, items: %-11zu"
+		   ", bytes_used: %-12zu, bytes_free: %-12zu }" CRLF,
+		   cache->name, (int)cache->item_size, slabs, items, used, free);
 
 	return used;
 }
 
-void
+int
 slab_stat(struct tbuf *t)
 {
 	struct slab *slab;
 	struct slab_cache *cache;
-
 	int64_t total_used = 0;
-	tbuf_printf(t, "slab statistics:" CRLF);
 
-	tbuf_printf(t, "  arenas:" CRLF);
+	print_stat(t, "slab statistics:" CRLF);
+
+	print_stat(t, "  arenas:" CRLF);
 	for (int i = 0; i < nelem(arena); i++) {
 		if (arena[i].size == 0)
 			break;
@@ -677,14 +682,14 @@ slab_stat(struct tbuf *t)
 			free_slabs++;
 
 
-		tbuf_printf(t, "    - { type: %s, used: %.2f, size: %zu, free_slabs: %i }" CRLF,
-			    &arena[i] == fixed_arena ? "fixed" :
-			    &arena[i] == grow_arena ? "grow" : "unknown",
-			    (double)arena[i].used / arena[i].size * 100,
-			    arena[i].size, free_slabs);
+		print_stat(t, "    - { type: %s, used: %.2f, size: %zu, free_slabs: %i }" CRLF,
+			   &arena[i] == fixed_arena ? "fixed" :
+			   &arena[i] == grow_arena ? "grow" : "unknown",
+			   (double)arena[i].used / arena[i].size * 100,
+			   arena[i].size, free_slabs);
 	}
 
-	tbuf_printf(t, "  caches:" CRLF);
+	print_stat(t, "  caches:" CRLF);
 	for (uint32_t i = 0; i < slab_active_caches; i++)
 		total_used += cache_stat(&slab_caches[i], t);
 
@@ -698,12 +703,14 @@ slab_stat(struct tbuf *t)
 
 	int64_t fixed_used_adj = fixed_arena->used - fixed_free_slabs * SLAB_SIZE;
 	if (fixed_arena->size != 0) {
-		tbuf_printf(t, "  items_used: %.2f" CRLF, (double)total_used / fixed_arena->size * 100);
-		tbuf_printf(t, "  arena_used: %.2f" CRLF, (double)fixed_used_adj / fixed_arena->size * 100);
+		print_stat(t, "  items_used: %.2f" CRLF, (double)total_used / fixed_arena->size * 100);
+		print_stat(t, "  arena_used: %.2f" CRLF, (double)fixed_used_adj / fixed_arena->size * 100);
 	} else {
-		tbuf_printf(t, "  items_used: 0" CRLF);
-		tbuf_printf(t, "  arena_used: 0" CRLF);
+		print_stat(t, "  items_used: 0" CRLF);
+		print_stat(t, "  arena_used: 0" CRLF);
 	}
+
+	return 0;
 }
 #endif
 

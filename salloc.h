@@ -86,7 +86,7 @@ void *salloc(size_t size);
 void sfree(void *ptr);
 void slab_validate();
 #ifdef SLAB_NEED_STAT
-void slab_stat(struct tbuf *buf);
+int slab_stat(struct tbuf *buf);
 #endif
 void slab_total_stat(uint64_t *bytes_used, uint64_t *items);
 void slab_cache_stat(struct slab_cache *cache, uint64_t *bytes_used, uint64_t *items);
